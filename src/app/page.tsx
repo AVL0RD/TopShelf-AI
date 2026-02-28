@@ -115,13 +115,16 @@ export default function Dashboard() {
           case 'chat':
             addMessage('assistant', action.payload);
             break;
+          case 'trigger_deploy':
+            handleDeploy(updatedContext);
+            break;
           case 'trigger_launch':
             handleGenerate(updatedContext, currentProducts);
             break;
         }
       }
     } catch (err: any) {
-      addMessage('assistant', `Brain Error: ${err.message}`, 'status');
+      addMessage('assistant', `Synthesis Brain Malfunction: ${err.message}`, 'status');
     } finally {
       setIsChatting(false);
     }
@@ -132,6 +135,35 @@ export default function Dashboard() {
     if (uploadedFile) {
       setFile(uploadedFile);
       addMessage('user', `Uploaded ${uploadedFile.name}`, 'file', uploadedFile.name);
+    }
+  };
+
+  const handleDeploy = async (overrideContext?: any) => {
+    const finalContext = overrideContext || context;
+    if (!finalContext.companyName) {
+      addMessage('assistant', "Deployment failed: Company name is missing.", 'status');
+      return;
+    }
+
+    try {
+      addMessage('assistant', `Initiating Zeabur Cloud Orchestration for ${finalContext.companyName}...`, 'status');
+      const res = await fetch('/api/deploy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ companyName: finalContext.companyName })
+      });
+
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.details || errData.error || "Deployment failed");
+      }
+
+      const data = await res.json();
+      addMessage('assistant', `🚀 Deployment Successful! Your premium storefront is now live!`, 'text');
+      setStatus('success');
+    } catch (err: any) {
+      addMessage('assistant', `Deployment Error: ${err.message}`, 'status');
+      setStatus('error');
     }
   };
 
@@ -158,15 +190,47 @@ export default function Dashboard() {
       if (!res.ok) throw new Error(await res.text());
       const payload = await res.json();
 
-      // 2. WaveSpeed Image Generation Step (BYPASSED - Using White Placeholders)
-      addMessage('assistant', "Synthesis Step 2: Hydrating products with premium white placeholders...", 'status');
+      // 2. WaveSpeed Image Generation Step (Rate Limited: 5 products / 10s)
+      addMessage('assistant', "Synthesizing high-aesthetic product imagery via WaveSpeed AI (Processing in batches of 5)...", 'status');
 
-      const hydratedProducts = finalProducts.map((p) => ({
-        ...p,
-        image: p.image || 'https://placehold.co/1080x1350/F3F4F6/F3F4F6.png' // High-aesthetic minimal off-white
-      }));
+      const hydratedProducts: any[] = [];
+      for (let i = 0; i < finalProducts.length; i += 5) {
+        const batch = finalProducts.slice(i, i + 5);
+        const batchResults = await Promise.all(batch.map(async (p) => {
+          if (!p.image || p.image.includes('unsplash') || p.image.includes('placehold.co')) {
+            try {
+              const imgRes = await fetch('/api/generate-image', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ productName: p.name })
+              });
+              if (imgRes.ok) {
+                const imgData = await imgRes.json();
+                console.log(`Generated image for ${p.name}:`, imgData.imageUrl);
+                return { ...p, image: imgData.imageUrl };
+              }
+            } catch (e) {
+              console.warn("WaveSpeed failed for product:", p.name, e);
+            }
+          }
+          return p;
+        }));
 
-      setProducts(hydratedProducts);
+        hydratedProducts.push(...batchResults);
+        // Live update the products state batch-by-batch for better UI experience
+        setProducts(prev => {
+          const newProducts = [...prev];
+          for (let j = 0; j < batchResults.length; j++) {
+            newProducts[i + j] = batchResults[j];
+          }
+          return newProducts;
+        });
+
+        if (i + 5 < finalProducts.length) {
+          addMessage('assistant', `Batch complete. Waiting 10s to respect API limits (Progress: ${i + batch.length}/${finalProducts.length})...`, 'status');
+          await new Promise(r => setTimeout(r, 10000));
+        }
+      }
 
       // 3. Local Product Hydration: Construct products.ts with generated/real images
       const productsFileContent = `

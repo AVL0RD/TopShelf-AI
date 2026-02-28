@@ -25,18 +25,25 @@ export async function POST(req: Request) {
             {
                 "actions": [
                     { "type": "set_branding", "payload": { "companyName": "...", "primaryColor": "..." } },
+                    { "type": "acknowledge_products", "payload": { "message": "Confirming products..." } },
                     { "type": "chat", "payload": "Certainly, I've updated your palette..." },
-                    { "type": "trigger_launch" }
+                    { "type": "trigger_launch" },
+                    { "type": "trigger_deploy" }
                 ]
             }
-        `;
+
+            DEPLOYMENT LOGIC: Zeabur is the hosting cloud. If the user asks for a 'live link', 'deploy', 'publish', or asks 'can I see it on the web', return { "type": "trigger_deploy" }.
+            PROACTIVE BRAIN: If the user says something positive after synth is done, suggest Zeabur deployment in the 'chat' action.
+            BRAND ANALYSIS: If you see a website crawl in the message, perform a deep analysis of mission/vision/colors and suggest branding.
+        `.trim();
 
         const prompt = `
             ${systemPrompt}
             
             History: ${JSON.stringify(history)}
             User Message: "${message}"
-            New Products Data Count: ${products ? products.length : 0}
+            New Products Data Count: ${products ? products.length : 0} items.
+            Current Context: ${JSON.stringify(context)}
         `;
 
         const result = await model.generateContent(prompt);
