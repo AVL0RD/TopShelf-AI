@@ -22,15 +22,6 @@ export async function POST(req: Request) {
             You receive a User Message, Conversation History, Current Brand Context, and Parsed Product Data.
             
             YOUR TOOLS (Actions to return in JSON):
-            1. set_branding: Update companyName, primaryColor, or secondaryColor.
-            2. acknowledge_products: Confirm you've seen the products (if provided).
-            3. trigger_launch: If the user wants to "launch", "generate", or "build" the store.
-            4. chat: A polite, luxury-toned response to the user.
-            
-            Current Context: ${JSON.stringify(context)}
-            Products Available: ${products ? products.length : 0} items.
-            
-            Return a JSON object:
             {
                 "actions": [
                     { "type": "set_branding", "payload": { "companyName": "...", "primaryColor": "..." } },

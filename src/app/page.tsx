@@ -68,11 +68,33 @@ export default function Dashboard() {
         setProducts(currentProducts);
       }
 
+      // Feature: Firecrawl Content Extraction - Detect URL
+      const urlMatch = userMsg.match(/https?:\/\/[^\s]+/);
+      let scrapedBrandContent = "";
+      if (urlMatch) {
+        const url = urlMatch[0];
+        addMessage('assistant', `Acknowledged. I'm now crawling ${url} to extract your brand essence and core identity...`, 'status');
+        try {
+          const crawlRes = await fetch('/api/crawl', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url })
+          });
+          if (crawlRes.ok) {
+            const data = await crawlRes.ok ? await crawlRes.json() : null;
+            scrapedBrandContent = data?.content || "";
+            if (data?.title) addMessage('assistant', `Discovery complete. Found: "${data.title}". Adapting synthesis engine to this brand vibe...`, 'status');
+          }
+        } catch (crawlErr) {
+          console.error("Discovery Engine Failed:", crawlErr);
+        }
+      }
+
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: userMsg,
+          message: scrapedBrandContent ? `[SCALED BRAND DATA extracted from website: ${scrapedBrandContent.substring(0, 3000)}] \n\n User instruction: ${userMsg}` : userMsg,
           history: messages.slice(-5),
           context,
           products: currentProducts
@@ -136,47 +158,15 @@ export default function Dashboard() {
       if (!res.ok) throw new Error(await res.text());
       const payload = await res.json();
 
-      // 2. WaveSpeed Image Generation Step (Rate Limited: 5 products / 10s)
-      addMessage('assistant', "Synthesizing high-aesthetic product imagery via WaveSpeed AI (Processing in batches of 5)...", 'status');
+      // 2. WaveSpeed Image Generation Step (BYPASSED - Using White Placeholders)
+      addMessage('assistant', "Synthesis Step 2: Hydrating products with premium white placeholders...", 'status');
 
-      const hydratedProducts: any[] = [];
-      for (let i = 0; i < finalProducts.length; i += 5) {
-        const batch = finalProducts.slice(i, i + 5);
-        const batchResults = await Promise.all(batch.map(async (p) => {
-          if (!p.image || p.image.includes('unsplash')) {
-            try {
-              const imgRes = await fetch('/api/generate-image', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ productName: p.name })
-              });
-              if (imgRes.ok) {
-                const imgData = await imgRes.json();
-                console.log(`Generated image for ${p.name}:`, imgData.imageUrl);
-                return { ...p, image: imgData.imageUrl };
-              }
-            } catch (e) {
-              console.warn("WaveSpeed failed for product:", p.name, e);
-            }
-          }
-          return p;
-        }));
+      const hydratedProducts = finalProducts.map((p) => ({
+        ...p,
+        image: p.image || 'https://placehold.co/1080x1350/F3F4F6/F3F4F6.png' // High-aesthetic minimal off-white
+      }));
 
-        hydratedProducts.push(...batchResults);
-        // Live update the products state batch-by-batch for better UI experience
-        setProducts(prev => {
-          const newProducts = [...prev];
-          for (let j = 0; j < batchResults.length; j++) {
-            newProducts[i + j] = batchResults[j];
-          }
-          return newProducts;
-        });
-
-        if (i + 5 < finalProducts.length) {
-          addMessage('assistant', `Batch complete. Waiting 10s to respect API limits (Progress: ${i + batch.length}/${finalProducts.length})...`, 'status');
-          await new Promise(r => setTimeout(r, 10000));
-        }
-      }
+      setProducts(hydratedProducts);
 
       // 3. Local Product Hydration: Construct products.ts with generated/real images
       const productsFileContent = `
