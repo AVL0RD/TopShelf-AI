@@ -22,6 +22,8 @@ export default function Dashboard() {
   const [status, setStatus] = useState<'idle' | 'parsing' | 'generating' | 'success' | 'error'>('idle');
   const [errorLog, setErrorLog] = useState<string>('');
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [products, setProducts] = useState<any[]>([]);
+  const [selectedProduct, setSelectedProduct] = useState<any | null>(null);
   const [inputValue, setInputValue] = useState('');
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -31,6 +33,8 @@ export default function Dashboard() {
       type: 'text'
     }
   ]);
+
+  const [isChatting, setIsChatting] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -45,29 +49,60 @@ export default function Dashboard() {
   };
 
   const handleSend = async () => {
-    if (!inputValue.trim()) return;
+    if (!inputValue.trim() && !file) return;
 
     const userMsg = inputValue;
+    const currentFile = file;
     setInputValue('');
-    addMessage('user', userMsg);
+    setFile(null);
 
-    // Basic logic to simulate "intelligence" without a backend yet
-    setTimeout(() => {
-      if (!context.companyName) {
-        setContext(prev => ({ ...prev, companyName: userMsg }));
-        addMessage('assistant', `Acknowledged. **${userMsg}** sounds like a powerhouse brand. Now, please upload your product CSV (name, price, description) or drag it here.`);
-      } else if (userMsg.toLowerCase().includes('color')) {
-        addMessage('assistant', "I'll update the style configurations. What specific hex codes are we looking at?");
-      } else if (userMsg.toLowerCase().includes('generate') || userMsg.toLowerCase().includes('launch')) {
-        if (!file) {
-          addMessage('assistant', "I need the product data first. Please attach your CSV.");
-        } else {
-          handleGenerate();
-        }
-      } else {
-        addMessage('assistant', "I'm processing that. You can also upload your CSV or tell me to 'Launch Storefront' when ready.");
+    if (userMsg) addMessage('user', userMsg);
+    if (currentFile) addMessage('user', `Attached: ${currentFile.name}`, 'file', currentFile.name);
+
+    try {
+      setIsChatting(true);
+
+      let currentProducts: any[] = products;
+      if (currentFile) {
+        currentProducts = await parseCSV(currentFile);
+        setProducts(currentProducts);
       }
-    }, 600);
+
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: userMsg,
+          history: messages.slice(-5),
+          context,
+          products: currentProducts
+        })
+      });
+
+      if (!res.ok) throw new Error("Synthesis Brain Offline...");
+
+      const { actions } = await res.json();
+      let updatedContext = context;
+
+      for (const action of actions) {
+        switch (action.type) {
+          case 'set_branding':
+            updatedContext = { ...updatedContext, ...action.payload };
+            setContext(updatedContext);
+            break;
+          case 'chat':
+            addMessage('assistant', action.payload);
+            break;
+          case 'trigger_launch':
+            handleGenerate(updatedContext, currentProducts);
+            break;
+        }
+      }
+    } catch (err: any) {
+      addMessage('assistant', `Brain Error: ${err.message}`, 'status');
+    } finally {
+      setIsChatting(false);
+    }
   };
 
   const onFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -75,33 +110,59 @@ export default function Dashboard() {
     if (uploadedFile) {
       setFile(uploadedFile);
       addMessage('user', `Uploaded ${uploadedFile.name}`, 'file', uploadedFile.name);
-      addMessage('assistant', "Product data received and validated. We are ready for synthesis. Should I launch the storefront now?");
     }
   };
 
-  const handleGenerate = async () => {
-    if (!file || !context.companyName) {
+  const handleGenerate = async (overrideContext?: any, overrideProducts?: any[]) => {
+    const finalContext = overrideContext || context;
+    const finalProducts = overrideProducts || products;
+
+    if (!finalContext.companyName || finalProducts.length === 0) {
       addMessage('assistant', "Synthesis aborted: Missing company name or product data.", 'status');
       return;
     }
 
     try {
       setStatus('generating');
-      addMessage('assistant', `Initiating TopShelf Synthesis Engine using GOOGLE_API_KEY...`, 'status');
+      addMessage('assistant', "Initiating TopShelf Synthesis Engine...", 'status');
 
-      const products = await parseCSV(file);
       const res = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ context, products })
+        body: JSON.stringify({ context: finalContext, products: finalProducts.slice(0, 3) })
       });
 
       if (!res.ok) throw new Error(await res.text());
+      const payload = await res.json();
 
-      await new Promise(r => setTimeout(r, 1500)); // Simulating effort
+      const productsFileContent = `
+import { Product } from '../types/product';
+
+export const products: Product[] = ${JSON.stringify(finalProducts.map((p, idx) => ({
+        id: "prod-" + idx,
+        name: p.name,
+        price: parseFloat(p.price as any) || 0,
+        description: p.description,
+        category: p.category || 'Essential',
+        image: p.image || 'https://images.unsplash.com/photo-1555529669-2269763671c0?q=80&w=1000&auto=format&fit=crop',
+        stock: Math.floor(Math.random() * 45) + 5
+      })), null, 2)};
+      `.trim();
+
+      const finalPayload = {
+        ...payload,
+        files: {
+          ...payload.files,
+          "template/data/products.ts": productsFileContent
+        }
+      };
+
+      console.log("Synthesis Payload Local:", finalPayload);
+
+      await new Promise(r => setTimeout(r, 1500));
       setPreviewUrl("preview-ready");
       setStatus('success');
-      addMessage('assistant', "Synthesis Complete. Your storefront is now live in the sandbox.", 'status');
+      addMessage('assistant', `Synthesis Complete. Successfully hydrated ${finalProducts.length} products.`, 'status');
     } catch (err: any) {
       setErrorLog(err.message);
       setStatus('error');
@@ -174,7 +235,7 @@ export default function Dashboard() {
                 </motion.div>
               ))}
             </AnimatePresence>
-            {status === 'generating' && (
+            {(status === 'generating' || isChatting) && (
               <div className="flex justify-start">
                 <div className="bg-white/5 p-4 rounded-2xl rounded-tl-none flex gap-2">
                   <div className="w-1.5 h-1.5 bg-gray-500 rounded-full animate-bounce [animation-delay:-0.3s]" />
@@ -271,21 +332,32 @@ export default function Dashboard() {
                     <div className="p-12">
                       <div className="flex justify-between items-end mb-12">
                         <h3 className="text-3xl font-black tracking-tighter uppercase italic">The Collection</h3>
-                        <span className="text-xs font-mono text-gray-400">Showing 3 Items</span>
+                        <span className="text-xs font-mono text-gray-400">Showing {products.length} Items</span>
                       </div>
                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-12">
-                        {[1, 2, 3].map(i => (
-                          <div key={i} className="group space-y-4 cursor-pointer">
+                        {products.map((item, i) => (
+                          <div
+                            key={i}
+                            className="group space-y-4 cursor-pointer"
+                            onClick={() => setSelectedProduct(item)}
+                          >
                             <div className="aspect-[4/5] bg-[#eee] rounded-[2rem] shadow-sm border border-black/5 group-hover:shadow-2xl transition-all duration-500 overflow-hidden relative">
+                              {item.image ? (
+                                <img src={item.image} alt={item.name} className="absolute inset-0 w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" />
+                              ) : (
+                                <div className="absolute inset-0 bg-gradient-to-br from-gray-100 to-gray-200" />
+                              )}
                               <div className="absolute inset-0 bg-white opacity-0 group-hover:opacity-10 transition-opacity" />
                             </div>
                             <div className="flex justify-between items-start pt-2">
                               <div className="space-y-1">
-                                <div className="h-4 w-12 rounded" style={{ backgroundColor: `${context.primaryColor}22`, color: context.primaryColor }} />
-                                <h4 className="font-bold text-lg leading-tight tracking-tight uppercase">Premium SKU_{i}</h4>
-                                <p className="text-sm text-gray-400">Refined materiality and form.</p>
+                                <div className="text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded inline-block" style={{ backgroundColor: `${context.primaryColor}22`, color: context.primaryColor }}>
+                                  {item.category || 'Essential'}
+                                </div>
+                                <h4 className="font-bold text-lg leading-tight tracking-tight uppercase">{item.name}</h4>
+                                <p className="text-sm text-gray-400 line-clamp-2">{item.description}</p>
                               </div>
-                              <span className="font-black italic text-xl">$149.00</span>
+                              <span className="font-black italic text-xl whitespace-nowrap">${(parseFloat(item.price) || 0).toFixed(2)}</span>
                             </div>
                           </div>
                         ))}
@@ -306,6 +378,72 @@ export default function Dashboard() {
                     </footer>
                   </div>
                 </div>
+
+                {/* Checkout/Payment Overlay */}
+                <AnimatePresence>
+                  {selectedProduct && (
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      className="absolute inset-0 bg-black/60 backdrop-blur-md z-50 flex items-center justify-center p-8"
+                    >
+                      <motion.div
+                        initial={{ scale: 0.9, y: 20 }}
+                        animate={{ scale: 1, y: 0 }}
+                        className="bg-white rounded-[32px] w-full max-w-lg overflow-hidden shadow-2xl flex flex-col"
+                      >
+                        <div className="p-8 border-b flex justify-between items-center">
+                          <h4 className="text-xl font-black uppercase italic tracking-tighter">SECURE_CHECKOUT</h4>
+                          <button
+                            onClick={() => setSelectedProduct(null)}
+                            className="bg-black text-white px-4 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-widest hover:scale-105 transition"
+                          >
+                            Close
+                          </button>
+                        </div>
+                        <div className="p-8 space-y-6">
+                          <div className="flex gap-6 items-center">
+                            <div className="w-24 h-24 bg-gray-100 rounded-2xl overflow-hidden shrink-0">
+                              {selectedProduct.image && <img src={selectedProduct.image} className="w-full h-full object-cover" />}
+                            </div>
+                            <div>
+                              <h5 className="font-bold text-lg uppercase tracking-tight">{selectedProduct.name}</h5>
+                              <p className="text-2xl font-black text-purple-600">${(parseFloat(selectedProduct.price) || 0).toFixed(2)}</p>
+                              {selectedProduct.options && <p className="text-[10px] text-gray-400 mt-1 uppercase font-bold tracking-widest">Size/Options: {selectedProduct.options}</p>}
+                            </div>
+                          </div>
+
+                          <div className="space-y-4 pt-4 border-t border-dashed">
+                            <div className="flex justify-between text-sm font-bold uppercase tracking-widest">
+                              <span>Subtotal</span>
+                              <span>${(parseFloat(selectedProduct.price) || 0).toFixed(2)}</span>
+                            </div>
+                            <div className="flex justify-between text-sm font-bold uppercase tracking-widest opacity-40">
+                              <span>Shipping</span>
+                              <span>$0.00</span>
+                            </div>
+                            <div className="flex justify-between text-xl font-black uppercase italic tracking-tighter pt-4 border-t">
+                              <span>Total</span>
+                              <span style={{ color: context.primaryColor }}>${(parseFloat(selectedProduct.price) || 0).toFixed(2)}</span>
+                            </div>
+                          </div>
+
+                          <button
+                            className="w-full py-4 bg-black text-white rounded-full font-black uppercase tracking-widest hover:bg-gray-900 transition active:scale-[0.98] shadow-xl flex items-center justify-center gap-2"
+                            onClick={() => {
+                              alert("Checkout simulated! Proceeding to Payment Gateway...");
+                              setSelectedProduct(null);
+                            }}
+                          >
+                            <Zap size={14} className="text-yellow-400" />
+                            PAY_NOW
+                          </button>
+                        </div>
+                      </motion.div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
             )}
           </div>
